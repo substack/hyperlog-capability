@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "chloride": "^2.2.2",
+    "collect-stream": "^1.1.1",
+    "hyperlog-index": "^5.1.0",
+    "hyperlog-sodium": "^2.0.0",
+    "inherits": "^2.0.1",
+    "subleveldown": "^2.1.0"
+  }
+}
