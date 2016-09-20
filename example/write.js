@@ -6,5 +6,9 @@ var cap = require('../')({
     next(null, row.value.group)
   }
 })
-var msg = process.argv.slice(2).join(' ')
-cap.log.append(msg)
+var groups = process.argv[2].split(',')
+var msg = process.argv.slice(3).join(' ')
+cap.log.append({
+  group: group,
+  message: msg
+})
