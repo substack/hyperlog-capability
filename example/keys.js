@@ -8,7 +8,8 @@ var cap = require('../')({
     next(null, row.value.group)
   }
 })
-cap.list(function (err, keys) {
+var group = process.argv[2]
+cap.list(group, function (err, keys) {
   if (err) console.error(err)
-  else console.log(keys.join('\n'))
+  else console.log(keys.map(function (x) { return x.publicKey }).join('\n'))
 })

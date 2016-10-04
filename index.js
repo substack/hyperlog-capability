@@ -8,6 +8,8 @@ var hindex = require('hyperlog-index')
 var collect = require('collect-stream')
 var defaults = require('levelup-defaults')
 var xtend = require('xtend')
+var duplexify = require('duplexify')
+var through = require('through2')
 
 inherits(Cap, EventEmitter)
 module.exports = Cap
@@ -18,7 +20,7 @@ function Cap (opts) {
   var self = this
   if (!(self instanceof Cap)) return new Cap(opts)
   self.db = defaults(opts.db, { valueEncoding: 'json' })
-  self.idb = opts.idb
+  self.idb = defaults(opts.idb, { valueEncoding: 'json' })
   self.log = deflog()
   self.caplog = deflog()
   self.sodium = opts.sodium
@@ -40,16 +42,14 @@ function Cap (opts) {
   self._dex = hindex({
     db: sub(self.idb,CAPIX),
     log: self.caplog,
-    map: function (row, enc, next) {
-      var g = self._groupfn(row)
-      if (!g) return next()
+    map: function (row, next) {
       var v = row.value || {}
       if (v.type === 'add') {
         self.idb.batch([
           { type: 'put', key: 'g!'+v.group+'!'+v.pubkey, value: row.key },
-          { type: 'put', key: 'pk!'+v.pubkey+'!'+group, value: row.key }
+          { type: 'put', key: 'pk!'+v.pubkey+'!'+v.group, value: row.key }
         ], next)
-      } else if (row.type === 'remove') {
+      } else if (v.type === 'remove') {
         self.idb.batch([
           { type: 'put', key: 'g!'+v.group+'!'+v.pubkey, value: row.key },
           { type: 'put', key: 'pk!'+v.pubkey+'!'+v.group, value: row.key }
@@ -107,12 +107,22 @@ Cap.prototype.getKeys = function (group) {
 }
 
 Cap.prototype.list = function (group, cb) {
-  var r = this.idb.createReadStream({
-    gt: 'g!'+group+'!',
-    lt: 'g!'+group+'!~'
+  var self = this
+  var d = duplexify.obj()
+  if (cb) collect(d, cb)
+  self._dex.ready(function () {
+    var r = self.idb.createReadStream({
+      gt: 'g!'+group+'!',
+      lt: 'g!'+group+'!~'
+    })
+    var tr = through.obj(write)
+    r.on('error', function (err) { d.emit('error', err) })
+    d.setReadable(r.pipe(tr))
   })
-  if (cb) collect(r, cb)
-  return r
+  return d
+  function write (row, enc, next) {
+    next(null, { publicKey: row.key.split('!')[2] })
+  }
 }
 
 function tohexkp (obj) {
