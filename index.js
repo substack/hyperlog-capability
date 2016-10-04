@@ -14,7 +14,7 @@ var through = require('through2')
 inherits(Cap, EventEmitter)
 module.exports = Cap
 
-var LOG = 'l', CAPLOG = 'c', CAPIX = 'i', CAPS = 'l'
+var LOG = 'l', CAPLOG = 'c', CAPIX = 'i'
 
 function Cap (opts) {
   var self = this
@@ -30,7 +30,10 @@ function Cap (opts) {
       self._keypair = fromhexkp(kp)
       self.emit('_keypair', self._keypair)
     } else {
-      kp = self.sodium.crypto_sign_keypair()
+      kp = {
+        sign: self.sodium.crypto_sign_keypair(),
+        box: self.sodium.crypto_box_keypair()
+      }
       self.db.put('_keypair', tohexkp(kp), function (err) {
         if (err) return self.emit('error')
         self._keypair = kp
@@ -44,7 +47,7 @@ function Cap (opts) {
     log: self.caplog,
     map: function (row, next) {
       var v = row.value || {}
-      if (v.type === 'add') {
+      if (v.type === 'add-key') {
         self.idb.batch([
           { type: 'put', key: 'g!'+v.group+'!'+v.pubkey, value: row.key },
           { type: 'put', key: 'pk!'+v.pubkey+'!'+v.group, value: row.key }
@@ -57,18 +60,22 @@ function Cap (opts) {
       } else next()
     }
   })
-  self.keypair(function (err, kp) {
+  self.getKeys(function (err, kp) {
     if (err) return self.emit('error', err)
-    var log = hyperlog(sub(opts.db,LOG), hsodium(self.sodium, kp, opts))
-    var caplog = hyperlog(sub(opts.db,CAPLOG), hsodium(self.sodium, kp, {
-      valueEncoding: 'json'
-    }))
+    var log = hyperlog(
+      sub(opts.db,LOG),
+      hsodium(self.sodium, kp.sign, opts)
+    )
+    var caplog = hyperlog(
+      sub(opts.db,CAPLOG),
+      hsodium(self.sodium, kp.sign, { valueEncoding: 'json' })
+    )
     self.log.setLog(log)
     self.caplog.setLog(caplog)
   })
 }
 
-Cap.prototype.keypair = function (opts, cb) {
+Cap.prototype.getKeys = function (opts, cb) {
   if (typeof opts === 'function') {
     cb = opts
     opts = {}
@@ -84,15 +91,23 @@ Cap.prototype.keypair = function (opts, cb) {
   }
 }
 
-Cap.prototype.add = function (group, pubkey, cb) {
-  this.caplog.append({
-    type: 'add',
-    group: group,
-    pubkey: pubkey
-  })
+Cap.prototype.createGroup = function (cb) {
+  // generate a shared secret and send the secret encrypted to ourselves
 }
 
-Cap.prototype.remove = function (group, pubkey, cb) {
+Cap.prototype.addKey = function (gid, pubkey, cb) {
+  // store a key and save a message with the shared secret
+  this.caplog.append({
+    type: 'add-key',
+    group: gid,
+    pubkey: pubkey
+  })
+  //this.caplog.append({
+  //  type: 'secret',
+  //})
+}
+
+Cap.prototype.remove = function (gid, pubkey, cb) {
   this.caplog.append({
     type: 'remove',
     group: group,
@@ -100,20 +115,14 @@ Cap.prototype.remove = function (group, pubkey, cb) {
   })
 }
 
-Cap.prototype.getGroups = function (pubkey) {
-}
-
-Cap.prototype.getKeys = function (group) {
-}
-
-Cap.prototype.list = function (group, cb) {
+Cap.prototype.list = function (gid, cb) {
   var self = this
   var d = duplexify.obj()
   if (cb) collect(d, cb)
   self._dex.ready(function () {
     var r = self.idb.createReadStream({
-      gt: 'g!'+group+'!',
-      lt: 'g!'+group+'!~'
+      gt: 'g!'+gid+'!',
+      lt: 'g!'+gid+'!~'
     })
     var tr = through.obj(write)
     r.on('error', function (err) { d.emit('error', err) })
@@ -127,14 +136,26 @@ Cap.prototype.list = function (group, cb) {
 
 function tohexkp (obj) {
   return {
-    publicKey: obj.publicKey.toString('hex'),
-    secretKey: obj.secretKey.toString('hex')
+    sign: {
+      publicKey: obj.sign.publicKey.toString('hex'),
+      secretKey: obj.sign.secretKey.toString('hex')
+    },
+    box: {
+      publicKey: obj.box.publicKey.toString('hex'),
+      secretKey: obj.box.secretKey.toString('hex')
+    }
   }
 }
 function fromhexkp (obj) {
   return {
-    publicKey: Buffer(obj.publicKey,'hex'),
-    secretKey: Buffer(obj.secretKey,'hex')
+    sign: {
+      publicKey: Buffer(obj.sign.publicKey,'hex'),
+      secretKey: Buffer(obj.sign.secretKey,'hex')
+    },
+    box: {
+      publicKey: Buffer(obj.box.publicKey,'hex'),
+      secretKey: Buffer(obj.box.secretKey,'hex')
+    }
   }
 }
 
