@@ -10,6 +10,8 @@ var defaults = require('levelup-defaults')
 var xtend = require('xtend')
 var duplexify = require('duplexify')
 var through = require('through2')
+var randombytes = require('randombytes')
+var isvalidkp = require('./lib/is-valid-kp.js')
 
 inherits(Cap, EventEmitter)
 module.exports = Cap
@@ -30,10 +32,7 @@ function Cap (opts) {
       self._keypair = fromhexkp(kp)
       self.emit('_keypair', self._keypair)
     } else {
-      kp = {
-        sign: self.sodium.crypto_sign_keypair(),
-        box: self.sodium.crypto_box_keypair()
-      }
+      kp = self.sodium.crypto_box_keypair()
       self.db.put('_keypair', tohexkp(kp), function (err) {
         if (err) return self.emit('error')
         self._keypair = kp
@@ -46,29 +45,54 @@ function Cap (opts) {
     db: sub(self.idb,CAPIX),
     log: self.caplog,
     map: function (row, next) {
-      var v = row.value || {}
-      if (v.type === 'add-key') {
-        self.idb.batch([
-          { type: 'put', key: 'g!'+v.group+'!'+v.pubkey, value: row.key },
-          { type: 'put', key: 'pk!'+v.pubkey+'!'+v.group, value: row.key }
-        ], next)
-      } else if (v.type === 'remove') {
-        self.idb.batch([
-          { type: 'put', key: 'g!'+v.group+'!'+v.pubkey, value: row.key },
-          { type: 'put', key: 'pk!'+v.pubkey+'!'+v.group, value: row.key }
-        ], next)
-      } else next()
+      self.getKeys(function (err, kp) {
+        if (err) return next(err)
+        var v = row.value || {}
+        if (v.type === 'auth') {
+          /*
+          && v.user === kp.publicKey.toString('hex')) {
+          var sk = self.sodium.crypto_box_open_easy(
+            v.data, v.nonce, row.identity, kp.secretKey)
+          if (!sk) {
+            // decryption failed
+            console.error('decryption failed!')
+            return next()
+          }
+          if (!isvalidkp(self.sodium, )) {
+            // sodium: self.sodium, secretKey })) {
+          }
+          // test that the key is valid by encrypting a message
+          self.idb.batch([
+            {
+              type: 'put',
+              key: 'sk!' + v.group + '!' + row.key,
+              value: msg
+            }
+          ], next)
+          */
+        } else if (v.type === 'add-key') {
+          self.idb.batch([
+            { type: 'put', key: 'g!'+v.group+'!'+v.pubkey, value: row.key },
+            { type: 'put', key: 'pk!'+v.pubkey+'!'+v.group, value: row.key }
+          ], next)
+        } else if (v.type === 'remove') {
+          self.idb.batch([
+            { type: 'put', key: 'g!'+v.group+'!'+v.pubkey, value: row.key },
+            { type: 'put', key: 'pk!'+v.pubkey+'!'+v.group, value: row.key }
+          ], next)
+        } else next()
+      })
     }
   })
   self.getKeys(function (err, kp) {
     if (err) return self.emit('error', err)
     var log = hyperlog(
       sub(opts.db,LOG),
-      hsodium(self.sodium, kp.sign, opts)
+      hsodium(self.sodium, kp, opts)
     )
     var caplog = hyperlog(
       sub(opts.db,CAPLOG),
-      hsodium(self.sodium, kp.sign, { valueEncoding: 'json' })
+      hsodium(self.sodium, kp, { valueEncoding: 'json' })
     )
     self.log.setLog(log)
     self.caplog.setLog(caplog)
@@ -91,8 +115,22 @@ Cap.prototype.getKeys = function (opts, cb) {
   }
 }
 
-Cap.prototype.createGroup = function (cb) {
-  // generate a shared secret and send the secret encrypted to ourselves
+Cap.prototype.createGroup = function (name, cb) {
+  // generate a shared keypair and send it encrypted to ourselves
+  var self = this
+  var groupkp = self.sodium.crypto_box_keypair()
+  var secret = groupkp.secretKey
+  var nonce = randombytes(self.sodium.crypto_box_NONCEBYTES || 24)
+  self.getKeys(function (err, kp) {
+    self.caplog.append({
+      type: 'auth',
+      user: kp.publicKey.toString('hex'),
+      group: groupkp.publicKey.toString('hex'),
+      nonce: nonce,
+      data: self.sodium.crypto_box_easy(
+        secret, nonce, kp.publicKey, kp.secretKey)
+    })
+  })
 }
 
 Cap.prototype.addKey = function (gid, pubkey, cb) {
@@ -134,31 +172,40 @@ Cap.prototype.list = function (gid, cb) {
   }
 }
 
+Cap.prototype._decode = function (msg, cb) {
+  var self = this
+  self.idb.get('sk!' + msg.to, function (err, sk) {
+    if (notFound(err)) return cb(null, null)
+    if (err) return cb(err)
+    try {
+      var bufs = {
+        data: Buffer(msg.data, 'hex'),
+        nonce: Buffer(msg.nonce, 'hex'),
+        to: Buffer(msg.to, 'hex'),
+        sk: Buffer(sk.key, 'hex')
+      }
+    } catch (err) { return cb(err) }
+    try {
+      var decoded = self.sodium.crypto_box_open_easy(
+        bufs.data, bufs.nonce, bufs.to, bufs.sk
+      )
+    } catch (err) { return cb(err)
+    cb(null, decoded)
+  })
+}
+
 function tohexkp (obj) {
   return {
-    sign: {
-      publicKey: obj.sign.publicKey.toString('hex'),
-      secretKey: obj.sign.secretKey.toString('hex')
-    },
-    box: {
-      publicKey: obj.box.publicKey.toString('hex'),
-      secretKey: obj.box.secretKey.toString('hex')
-    }
+    publicKey: obj.publicKey.toString('hex'),
+    secretKey: obj.secretKey.toString('hex')
   }
 }
 function fromhexkp (obj) {
   return {
-    sign: {
-      publicKey: Buffer(obj.sign.publicKey,'hex'),
-      secretKey: Buffer(obj.sign.secretKey,'hex')
-    },
-    box: {
-      publicKey: Buffer(obj.box.publicKey,'hex'),
-      secretKey: Buffer(obj.box.secretKey,'hex')
-    }
+    publicKey: Buffer(obj.publicKey,'hex'),
+    secretKey: Buffer(obj.secretKey,'hex')
   }
 }
-
 function notFound (err) {
   return err && (/^notfound/i.test(err.message) || err.notFound)
 }
