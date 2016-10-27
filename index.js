@@ -1,22 +1,22 @@
 var hyperlog = require('hyperlog')
-var deflog = require('deferred-hyperlog')
 var hsodium = require('hyperlog-sodium')
 var sub = require('subleveldown')
-var inherits = require('inherits')
-var EventEmitter = require('events').EventEmitter
 var hindex = require('hyperlog-index')
 var collect = require('collect-stream')
 var defaults = require('levelup-defaults')
 var xtend = require('xtend')
 var duplexify = require('duplexify')
 var through = require('through2')
+var readonly = require('read-only-stream')
 var randombytes = require('randombytes')
+
+var inherits = require('inherits')
+var EventEmitter = require('events').EventEmitter
+
 var isvalidkp = require('./lib/is-valid-kp.js')
 
 inherits(Cap, EventEmitter)
 module.exports = Cap
-
-var CAPDEX = 'c', LOGDEX = 'l'
 
 // todo: sign the group-create message with the appropriate public key
 
@@ -24,39 +24,58 @@ function Cap (opts) {
   var self = this
   if (!(self instanceof Cap)) return new Cap(opts)
   self.db = defaults(opts.db, { valueEncoding: 'json' })
-  self.idb = defaults(opts.idb, { valueEncoding: 'json' })
-  self.log = deflog()
-  self.caplog = deflog()
+  self.log = hyperlog(opts.logdb, opts)
+  self.caplog = hyperlog(opts.capdb, { valueEncoding: 'json' })
   self.sodium = opts.sodium
-  self._groupfn = opts.group
 
+  /*
   self._logdex = hindex({
     db: sub(self.idb, LOGDEX),
     log: self.log,
     map: function (row, next) {
       self._decode(row, function (err, next) {
         if (err) return next(err)
-        
       })
+      return next()
     }
   })
   self._capdex = hindex({
     db: sub(self.idb,CAPDEX),
     log: self.caplog,
     map: function (row, next) {
+      return next()
       var v = row.value
       if (v && v.type === 'group-create') {
-        self.idb.put('g!' + , {
-          
-        }, next)
       } else if (v && v.type === 'group-invite') {
-        
+        var group = JSON.parse(v.data)
+        console.error('group', group)
+        if (group.sign && !isvalidkp(self.sodium, group.sign)) {
+        }
       }
+    }
+  })
+  */
+  self._capdex = hindex({
+    db: sub(self.db, 'ic'),
+    log: self.caplog,
+    map: function (row, next) {
+      var v = row.value
+      if (v && v.type === 'group-create' && v.name
+      && /^[0-9a-f]+$/i.test(v.sign.publicKey)) {
+        self.db.batch([
+          {
+            type: 'put',
+            key: 'pk-name!' + v.sign.publicKey + '!' + v.name,
+            value: { key: row.key }
+          }
+        ], next)
+      } else next()
     }
   })
 }
 
 Cap.prototype.createGroup = function (name, cb) {
+  if (!cb) cb = noop
   var self = this
   var kp = {
     box: self.sodium.crypto_box_keypair(),
@@ -65,40 +84,52 @@ Cap.prototype.createGroup = function (name, cb) {
   self.db.batch([
     {
       type: 'put',
-      key: 'sk!' + kp.sign.publicKey.toString('hex'),
+      key: 'sk-sign!' + kp.sign.publicKey.toString('hex'),
       value: {
-        sign: {
-          publicKey: kp.sign.publicKey.toString('hex'),
-          secretKey: kp.sign.secretKey.toString('hex')
-        },
-        box: {
-          publicKey: kp.box.publicKey.toString('hex'),
-          secretKey: kp.box.secretKey.toString('hex')
-        }
+        publicKey: kp.sign.publicKey.toString('hex'),
+        secretKey: kp.sign.secretKey.toString('hex')
+      }
+    },
+    {
+      type: 'put',
+      key: 'sk-box!' + kp.box.publicKey.toString('hex'),
+      value: {
+        publicKey: kp.box.publicKey.toString('hex'),
+        secretKey: kp.box.secretKey.toString('hex')
       }
     }
   ], onbatch)
   function onbatch (err) {
     if (err) return cb(err)
-    self.caplog.put({
+    self.caplog.append({
       type: 'group-create',
       name: name,
-      publicKey: {
-        sign: kp.sign.publicKey.toString('hex'),
-        box: kp.box.publicKey.toString('hex')
-      }
+      sign: { publicKey: kp.sign.publicKey.toString('hex') },
+      box: { publicKey: kp.box.publicKey.toString('hex') }
     }, onput)
   }
   function onput (err) {
     if (err) return cb(err)
-    cb(null, {
-      sign: kp.sign.publickey,
-      box: kp.box.publicKey
-    })
+    cb(null, kp.sign.publicKey)
   }
 }
 
-Cap.prototype.share = function (dockey) {
+Cap.prototype.listGroups = function (cb) {
+  var self = this
+  var stream = self.db.createReadStream({
+    gt: 'pk-name!',
+    lt: 'pk-name!\uffff'
+  })
+  var output = readonly(stream.pipe(through.obj(write)))
+  if (cb) collect(output, cb)
+  return output
+  function write (row, enc, next) {
+    var sp = row.key.split('!')
+    next(null, {
+      name: sp.slice(1,-1).join('!'),
+      publicKey: sp[sp.length-1]
+    })
+  }
 }
 
 Cap.prototype.invite = function (opts, cb) {
@@ -120,38 +151,42 @@ Cap.prototype.invite = function (opts, cb) {
       pk: Buffer(opts.to, 'hex'),
       sk: Buffer(kp.box.secretKey, 'hex')
     }
-    var obj = {}
+    var obj = {
+      box: { publicKey: kp.box.publicKey.toString('hex') },
+      sign: { publicKey: kp.sign.publicKey.toString('hex') }
+    }
     if (/r/.test(opts.mode)) {
-      obj.box = {
-        secretKey: kp.box.secretKey.toString('hex'),
-        publicKey: kp.box.publicKey.toString('hex')
-      }
+      obj.box.secretKey = kp.box.secretKey.toString('hex')
     }
     if (/w/.test(opts.mode)) {
-      opts.sign = {
-        secretKey: kp.sign.secretKey.toString('hex'),
-        publicKey: kp.sign.publicKey.toString('hex')
-      }
+      opts.sign.secretKey = kp.sign.secretKey.toString('hex')
     }
     var secret = Buffer(JSON.stringify(obj))
+    var encdata = self.sodium.crypto_box_easy(secret, nonce, pk, sk)
     self.caplog.append({
       type: 'group-invite',
       to: opts.to,
       group: opts.group,
       nonce: nonce,
-      data: self.sodium.crypto_box_easy(secret, nonce, pk, sk)
+      encdata: 'base64:' + encdata.toString('base64')
     }, cb)
   })
 }
 
 Cap.prototype._decode = function (msg, cb) {
   var self = this
+  if (!msg.to) {
+    return errtick(cb, '.to not provided in encrypted message')
+  }
+  if (!msg.encdata) {
+    return errtick(cb, '.encdata not provided in encrypted message')
+  }
   self.idb.get('sk!' + msg.to, function (err, kp) {
     if (notFound(err)) return cb(null, null)
     if (err) return cb(err)
     try {
       var bufs = {
-        data: Buffer(msg.data, 'hex'),
+        data: Buffer(msg.encdata, 'hex'),
         nonce: Buffer(msg.nonce, 'hex'),
         to: Buffer(msg.to, 'hex'),
         sk: kp.box.secretKey
@@ -161,16 +196,27 @@ Cap.prototype._decode = function (msg, cb) {
       var decoded = self.sodium.crypto_box_open_easy(
         bufs.data, bufs.nonce, bufs.to, bufs.sk
       )
-    } catch (err) { return cb(err)
+    } catch (err) { return cb(err) }
     cb(null, decoded)
   })
 }
 
+Cap.prototype.format = function (opts) {
+}
+
+Cap.prototype.add = function () {}
+Cap.prototype.append = function () {}
+Cap.prototype.get = function () {}
+Cap.prototype.createReadStream = function () {}
+Cap.prototype.batch = function () {}
+Cap.prototype.put = function () {}
+Cap.prototype.del = function () {}
+
 function notFound (err) {
   return err && (/^notfound/i.test(err.message) || err.notFound)
 }
-
 function errtick (cb, msg) {
   var err = new Error(msg)
   process.nextTick(function () { cb(err) })
 }
+function noop () {}

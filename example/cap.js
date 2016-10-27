@@ -1,41 +1,28 @@
 var level = require('level')
 var cap = require('../')({
-  db: level('/tmp/cap.db'),
-  idb: level('/tmp/icap.db'),
+  logdb: level('/tmp/cap/log'),
+  capdb: level('/tmp/cap/cap'),
+  db: level('/tmp/cap/db'),
   sodium: require('chloride'),
   valueEncoding: 'json',
-  group: function (row, next) {
-    next(null, row.value.group)
-  }
 })
-if (process.argv[2] === 'create-group') {
-  cap.createGroup(function (err, gid) {
+if (process.argv[2] === 'create') {
+  cap.createGroup(process.argv[3], function (err, gid) {
     if (err) console.error(err)
-    else console.log(gid)
+    else console.log(gid.toString('hex'))
   })
-} else if (process.argv[2] === 'add-key') {
-  var gid = process.argv[3]
-  var pubkey = process.argv[4]
-  cap.addKey(gid, pubkey, function (err, keys) {
-    if (err) console.error(err)
-    else console.log(keys.join('\n'))
-  })
-} else if (process.argv[2] === 'id') {
-  cap.getKeys({ encoding: 'hex' }, function (err, kp) {
-    if (err) console.error(err)
-    else console.log(kp.sign.publicKey)
-  })
-} else if (process.argv[2] === 'list-keys') {
-  var gid = process.argv[3]
-  cap.list(gid, function (err, keys) {
-    if (err) console.error(err)
-    else console.log(keys.map(function (x) {
-      return x.publicKey
-    }).join('\n'))
+} else if (process.argv[2] === 'list') {
+  cap.listGroups(function (err, groups) {
+    if (err) return console.error(err)
+    groups.forEach(function (g) {
+      console.log(g.name, g.publicKey)
+    })
   })
 } else if (process.argv[2] === 'write') {
-  cap.log.append({
+  cap.append({
     group: process.argv[3],
-    message: process.argv.slice(3).join(' ')
+    data: {
+      message: process.argv.slice(3).join(' ')
+    }
   })
 }
