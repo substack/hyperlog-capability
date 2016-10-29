@@ -18,6 +18,10 @@ if (process.argv[2] === 'create') {
       console.log(g.name, g.id)
     })
   })
+} else if (process.argv[2] === 'stream') {
+  cap.createReadStream().on('data', function (row) {
+    console.log(row.key, row.value.toString())
+  })
 } else if (process.argv[2] === 'write') {
   var data = Buffer(process.argv.slice(4).join(' '))
   var groups = process.argv[3].split(',')

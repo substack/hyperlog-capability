@@ -171,45 +171,55 @@ Cap.prototype._decode = function (key, doc, cb) {
   function write (row, enc, next) {
     var key = row.key.split('!')[2]
     self.log.get(key, function (err, row) {
-      if (notFound(err)) return next()
-      if (err) return next(err)
-      var v = row.value
-      if (!v) return next()
-      self.db.get('sk!' + v.group, function (err, kp) {
-        if (notFound(err)) return next()
-        if (err) return next(err)
-        try {
-          var bufs = {
-            data: Buffer(v.encdata, 'base64'),
-            nonce: Buffer(v.nonce, 'base64'),
-            pk: Buffer(v.from, 'hex'),
-            sk: Buffer(kp.box.secretKey, 'hex')
-          }
-        } catch (err) { return cb(err) }
-        try {
-          var dockey = self.sodium.crypto_box_open_easy(
-            bufs.data, bufs.nonce, bufs.pk, bufs.sk
-          )
-        } catch (err) { return cb(err) }
-        if (!dockey) return next()
-        try {
-          var bufs = {
-            data: Buffer(doc.encdata, 'base64'),
-            nonce: Buffer(doc.nonce, 'base64')
-          }
-        } catch (err) { return cb(err) }
-        try {
-          var data = self.sodium.crypto_secretbox_open_easy(
-            bufs.data, bufs.nonce, dockey)
-        } catch (err) { return cb(err) }
-        cb(null, data)
-        r.destroy()
+      if (notFound(err)) next()
+      else if (err) next(err)
+      else self._decodeRow(row, doc, function (err, data) {
+        if (err) next(err)
+        else if (data) {
+          cb(null, data)
+          r.destroy()
+        } else next()
       })
     })
   }
   function end () {
     cb(null, null)
   }
+}
+
+Cap.prototype._decodeRow = function (row, doc, cb) {
+  var self = this
+  var v = row.value
+  if (!v) return cb()
+  self.db.get('sk!' + v.group, function (err, kp) {
+    if (notFound(err)) return cb()
+    if (err) return cb(err)
+    try {
+      var bufs = {
+        data: Buffer(v.encdata, 'base64'),
+        nonce: Buffer(v.nonce, 'base64'),
+        pk: Buffer(v.from, 'hex'),
+        sk: Buffer(kp.box.secretKey, 'hex')
+      }
+    } catch (err) { return cb(err) }
+    try {
+      var dockey = self.sodium.crypto_box_open_easy(
+        bufs.data, bufs.nonce, bufs.pk, bufs.sk
+      )
+    } catch (err) { return cb(err) }
+    if (!dockey) return cb()
+    try {
+      var bufs = {
+        data: Buffer(doc.encdata, 'base64'),
+        nonce: Buffer(doc.nonce, 'base64')
+      }
+    } catch (err) { return cb(err) }
+    try {
+      var data = self.sodium.crypto_secretbox_open_easy(
+        bufs.data, bufs.nonce, dockey)
+    } catch (err) { return cb(err) }
+    cb(null, data)
+  })
 }
 
 Cap.prototype.format = function (data, opts, links) {
@@ -235,7 +245,6 @@ Cap.prototype.format = function (data, opts, links) {
     })
   }
   var key = framedHash(links, encoder.encode(doc.value, 'json'))
-  batch.push(doc)
 
   // throw-away key to send a message to the group
   var kp = self.sodium.crypto_box_keypair()
@@ -257,6 +266,7 @@ Cap.prototype.format = function (data, opts, links) {
       })
     })
   })
+  batch.push(doc)
   return batch
 }
 
@@ -270,7 +280,7 @@ Cap.prototype.add = function (links, row, opts, cb) {
   var batch = self.format(row, opts, links)
   self.log.batch(batch, function (err, nodes) {
     if (err) cb(err)
-    else cb(null, nodes[0])
+    else cb(null, nodes[nodes.length-1])
   })
 }
 
@@ -284,7 +294,7 @@ Cap.prototype.append = function (row, opts, cb) {
   var batch = self.format(row, opts, opts.links)
   self.log.batch(batch, function (err, nodes) {
     if (err) cb(err)
-    else cb(null, nodes[0])
+    else cb(null, nodes[nodes.length-1])
   })
 }
 
@@ -302,7 +312,32 @@ Cap.prototype.get = function (key, cb) {
   })
 }
 
-Cap.prototype.createReadStream = function () {
+Cap.prototype.createReadStream = function (opts) {
+  var self = this
+  var pkey = null
+  var r = self.log.createReadStream(opts)
+  var s = through.obj(write)
+  r.on('error', function (err) { s.emit('error', err) })
+  return readonly(r.pipe(s))
+
+  function write (row, enc, next) {
+    //if (pkey) console.log(row.key, pkey.value.key)
+    var v = row.value
+    if (!v) return next()
+    if (v.type === 'doc-key') {
+      pkey = row
+      next()
+    } else if (v.type === 'doc-enc' && pkey && row.key === pkey.value.key) {
+      self._decodeRow(pkey, v, function (err, data) {
+        if (err) next(err)
+        else if (data) next(null, { key: row.key, value: data })
+        else next()
+      })
+    } else {
+      pkey = null
+      next()
+    }
+  }
 }
 
 Cap.prototype.batch = function () {
