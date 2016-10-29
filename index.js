@@ -7,8 +7,13 @@ var defaults = require('levelup-defaults')
 var xtend = require('xtend')
 var duplexify = require('duplexify')
 var through = require('through2')
+var to = require('to2')
 var readonly = require('read-only-stream')
 var randombytes = require('randombytes')
+var framedHash = require('hyperlog/lib/hash.js')
+var encoder = require('hyperlog/lib/encode.js')
+var isbuffer = require('is-buffer')
+var once = require('once')
 
 var inherits = require('inherits')
 var EventEmitter = require('events').EventEmitter
@@ -24,49 +29,28 @@ function Cap (opts) {
   var self = this
   if (!(self instanceof Cap)) return new Cap(opts)
   self.db = defaults(opts.db, { valueEncoding: 'json' })
-  self.log = hyperlog(opts.logdb, opts)
-  self.caplog = hyperlog(opts.capdb, { valueEncoding: 'json' })
+  self.log = hyperlog(opts.logdb, { valueEncoding: 'json' })
   self.sodium = opts.sodium
-
-  /*
-  self._logdex = hindex({
-    db: sub(self.idb, LOGDEX),
+  self._dex = hindex({
+    db: sub(self.db, 'ic'),
     log: self.log,
     map: function (row, next) {
-      self._decode(row, function (err, next) {
-        if (err) return next(err)
-      })
-      return next()
-    }
-  })
-  self._capdex = hindex({
-    db: sub(self.idb,CAPDEX),
-    log: self.caplog,
-    map: function (row, next) {
-      return next()
       var v = row.value
-      if (v && v.type === 'group-create') {
-      } else if (v && v.type === 'group-invite') {
-        var group = JSON.parse(v.data)
-        console.error('group', group)
-        if (group.sign && !isvalidkp(self.sodium, group.sign)) {
-        }
-      }
-    }
-  })
-  */
-  self._capdex = hindex({
-    db: sub(self.db, 'ic'),
-    log: self.caplog,
-    map: function (row, next) {
-      var v = row.value
-      if (v && v.type === 'group-create' && v.name
-      && /^[0-9a-f]+$/i.test(v.sign.publicKey)) {
+      if (!v) return next()
+      if (v.type === 'group-create' && ishex(v.id)) {
         self.db.batch([
           {
             type: 'put',
-            key: 'pk-name!' + v.sign.publicKey + '!' + v.name,
+            key: 'pk-name!' + v.id + '!' + v.name,
             value: { key: row.key }
+          }
+        ], next)
+      } else if (v.type === 'doc-key' && ishex(v.key)) {
+        self.db.batch([
+          {
+            type: 'put',
+            key: 'dk!' + v.key + '!' + row.key,
+            value: ''
           }
         ], next)
       } else next()
@@ -81,36 +65,34 @@ Cap.prototype.createGroup = function (name, cb) {
     box: self.sodium.crypto_box_keypair(),
     sign: self.sodium.crypto_sign_keypair()
   }
+  var gid = kp.sign.publicKey.toString('hex') + kp.box.publicKey.toString('hex')
   self.db.batch([
     {
       type: 'put',
-      key: 'sk-sign!' + kp.sign.publicKey.toString('hex'),
+      key: 'sk!' + gid,
       value: {
-        publicKey: kp.sign.publicKey.toString('hex'),
-        secretKey: kp.sign.secretKey.toString('hex')
-      }
-    },
-    {
-      type: 'put',
-      key: 'sk-box!' + kp.box.publicKey.toString('hex'),
-      value: {
-        publicKey: kp.box.publicKey.toString('hex'),
-        secretKey: kp.box.secretKey.toString('hex')
+        sign: {
+          publicKey: kp.sign.publicKey.toString('hex'),
+          secretKey: kp.sign.secretKey.toString('hex')
+        },
+        box: {
+          publicKey: kp.box.publicKey.toString('hex'),
+          secretKey: kp.box.secretKey.toString('hex')
+        }
       }
     }
   ], onbatch)
   function onbatch (err) {
     if (err) return cb(err)
-    self.caplog.append({
+    self.log.append({
       type: 'group-create',
       name: name,
-      sign: { publicKey: kp.sign.publicKey.toString('hex') },
-      box: { publicKey: kp.box.publicKey.toString('hex') }
+      id: gid
     }, onput)
   }
   function onput (err) {
     if (err) return cb(err)
-    cb(null, kp.sign.publicKey)
+    cb(null, gid)
   }
 }
 
@@ -126,8 +108,8 @@ Cap.prototype.listGroups = function (cb) {
   function write (row, enc, next) {
     var sp = row.key.split('!')
     next(null, {
-      name: sp.slice(1,-1).join('!'),
-      publicKey: sp[sp.length-1]
+      id: sp[1],
+      name: sp.slice(2).join('!')
     })
   }
 }
@@ -163,54 +145,174 @@ Cap.prototype.invite = function (opts, cb) {
     }
     var secret = Buffer(JSON.stringify(obj))
     var encdata = self.sodium.crypto_box_easy(secret, nonce, pk, sk)
-    self.caplog.append({
+    self.log.append(jstr({
       type: 'group-invite',
       to: opts.to,
       group: opts.group,
       nonce: nonce,
-      encdata: 'base64:' + encdata.toString('base64')
-    }, cb)
+      encdata: encdata
+    }), cb)
   })
 }
 
-Cap.prototype._decode = function (msg, cb) {
+Cap.prototype._decode = function (key, doc, cb) {
   var self = this
-  if (!msg.to) {
-    return errtick(cb, '.to not provided in encrypted message')
-  }
-  if (!msg.encdata) {
+  cb = once(cb || noop)
+  if (!doc.encdata) {
     return errtick(cb, '.encdata not provided in encrypted message')
   }
-  self.idb.get('sk!' + msg.to, function (err, kp) {
-    if (notFound(err)) return cb(null, null)
-    if (err) return cb(err)
-    try {
-      var bufs = {
-        data: Buffer(msg.encdata, 'hex'),
-        nonce: Buffer(msg.nonce, 'hex'),
-        to: Buffer(msg.to, 'hex'),
-        sk: kp.box.secretKey
-      }
-    } catch (err) { return cb(err) }
-    try {
-      var decoded = self.sodium.crypto_box_open_easy(
-        bufs.data, bufs.nonce, bufs.to, bufs.sk
-      )
-    } catch (err) { return cb(err) }
-    cb(null, decoded)
+  var r = self.db.createReadStream({
+    gt: 'dk!' + key + '!',
+    lt: 'dk!' + key + '!~'
+  })
+  r.on('error', cb)
+  r.pipe(to.obj(write, end)).on('error', cb)
+
+  function write (row, enc, next) {
+    var key = row.key.split('!')[2]
+    self.log.get(key, function (err, row) {
+      if (notFound(err)) return next()
+      if (err) return next(err)
+      var v = row.value
+      if (!v) return next()
+      self.db.get('sk!' + v.group, function (err, kp) {
+        if (notFound(err)) return next()
+        if (err) return next(err)
+        try {
+          var bufs = {
+            data: Buffer(v.encdata, 'base64'),
+            nonce: Buffer(v.nonce, 'base64'),
+            pk: Buffer(v.from, 'hex'),
+            sk: Buffer(kp.box.secretKey, 'hex')
+          }
+        } catch (err) { return cb(err) }
+        try {
+          var dockey = self.sodium.crypto_box_open_easy(
+            bufs.data, bufs.nonce, bufs.pk, bufs.sk
+          )
+        } catch (err) { return cb(err) }
+        if (!dockey) return next()
+        try {
+          var bufs = {
+            data: Buffer(doc.encdata, 'base64'),
+            nonce: Buffer(doc.nonce, 'base64')
+          }
+        } catch (err) { return cb(err) }
+        try {
+          var data = self.sodium.crypto_secretbox_open_easy(
+            bufs.data, bufs.nonce, dockey)
+        } catch (err) { return cb(err) }
+        cb(null, data)
+        r.destroy()
+      })
+    })
+  }
+  function end () {
+    cb(null, null)
+  }
+}
+
+Cap.prototype.format = function (data, opts, links) {
+  var self = this
+  if (!opts) opts = {}
+  if (!links) links = []
+  var groups = [].concat(opts.group || []).concat(opts.groups || [])
+  for (var i = 0; i < groups.length; i++) {
+    if (typeof groups[i] === 'string' && !ishex(groups[i])) {
+      return errtick(cb, 'group public key must be a buffer or hex string')
+    } else if (typeof groups[i] === 'string') {
+      groups[i] = Buffer(groups[i], 'hex')
+    }
+  }
+  var batch = []
+  var dockey = randombytes(self.sodium.crypto_secretbox_KEYBYTES || 32)
+  var nonce = randombytes(self.sodium.crypto_secretbox_NONCEBYTES || 24)
+  var doc = {
+    value: jstr({
+      type: 'doc-enc',
+      nonce: nonce,
+      encdata: self.sodium.crypto_secretbox_easy(data, nonce, dockey)
+    })
+  }
+  var key = framedHash(links, encoder.encode(doc.value, 'json'))
+  batch.push(doc)
+
+  // throw-away key to send a message to the group
+  var kp = self.sodium.crypto_box_keypair()
+
+  // encrypt the document key for each group public key
+  groups.forEach(function (g) {
+    var nonce = randombytes(self.sodium.crypto_secretbox_NONCEBYTES || 24)
+    var siglen = self.sodium.crypto_sign_PUBLICKEYByTES || 32
+    var boxlen = self.sodium.crypto_box_PUBLICKEYBYTES || 32
+    var boxpk = g.slice(siglen, siglen + boxlen)
+    batch.push({
+      value: jstr({
+        type: 'doc-key',
+        group: g.toString('hex'),
+        key: key,
+        from: kp.publicKey.toString('hex'), // todo: use device key
+        nonce: nonce,
+        encdata: self.sodium.crypto_box_easy(dockey, nonce, boxpk, kp.secretKey)
+      })
+    })
+  })
+  return batch
+}
+
+Cap.prototype.add = function (links, row, opts, cb) {
+  var self = this
+  if (typeof opts === 'function') {
+    cb = opts
+    opts = {}
+  }
+  if (!opts) opts = {}
+  var batch = self.format(row, opts, links)
+  self.log.batch(batch, function (err, nodes) {
+    if (err) cb(err)
+    else cb(null, nodes[0])
   })
 }
 
-Cap.prototype.format = function (opts) {
+Cap.prototype.append = function (row, opts, cb) {
+  var self = this
+  if (typeof opts === 'function') {
+    cb = opts
+    opts = {}
+  }
+  if (!opts) opts = {}
+  var batch = self.format(row, opts, opts.links)
+  self.log.batch(batch, function (err, nodes) {
+    if (err) cb(err)
+    else cb(null, nodes[0])
+  })
 }
 
-Cap.prototype.add = function () {}
-Cap.prototype.append = function () {}
-Cap.prototype.get = function () {}
-Cap.prototype.createReadStream = function () {}
-Cap.prototype.batch = function () {}
-Cap.prototype.put = function () {}
-Cap.prototype.del = function () {}
+Cap.prototype.get = function (key, cb) {
+  var self = this
+  if (!cb) cb = noop
+  self.log.get(key, function (err, doc) {
+    if (err) return cb(err)
+    var v = doc && doc.value
+    if (!v) cb(null, undefined)
+    else if (v.type === 'doc') cb(null, v.value)
+    else if (v.type === 'doc-enc') {
+      self._decode(key, v, cb)
+    } else cb(null, undefined)
+  })
+}
+
+Cap.prototype.createReadStream = function () {
+}
+
+Cap.prototype.batch = function () {
+}
+
+Cap.prototype.put = function () {
+}
+
+Cap.prototype.del = function () {
+}
 
 function notFound (err) {
   return err && (/^notfound/i.test(err.message) || err.notFound)
@@ -220,3 +322,17 @@ function errtick (cb, msg) {
   process.nextTick(function () { cb(err) })
 }
 function noop () {}
+
+function jstr (doc) {
+  var ndoc = {}
+  Object.keys(doc).sort().forEach(function (key) {
+    if (isbuffer(doc[key])) {
+      ndoc[key] = doc[key].toString('base64')
+    } else ndoc[key] = doc[key]
+  })
+  return ndoc
+}
+
+function ishex (s) {
+  return /^[0-9a-f]+$/i.test(s)
+}
