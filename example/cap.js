@@ -19,9 +19,7 @@ if (process.argv[2] === 'create') {
     })
   })
 } else if (process.argv[2] === 'stream') {
-  cap.createReadStream().on('data', function (row) {
-    console.log(row.key, row.value.toString())
-  })
+  cap.createReadStream().on('data', console.log)
 } else if (process.argv[2] === 'write') {
   var data = Buffer(process.argv.slice(4).join(' '))
   var groups = process.argv[3].split(',')

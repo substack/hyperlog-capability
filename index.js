@@ -298,6 +298,30 @@ Cap.prototype.append = function (row, opts, cb) {
   })
 }
 
+Cap.prototype.batch = function (rows, opts, cb) {
+  var self = this
+  if (typeof opts === 'function') {
+    cb = opts
+    opts = {}
+  }
+  if (!opts) opts = {}
+  var batch = [], lens = [], sum = 0
+  rows.forEach(function (row) {
+    var nbatch = self.format(row, opts, opts.links)
+    batch = batch.concat(nbatch)
+    sum += nbatch.length;
+    lens.push(sum)
+  })
+  self.log.batch(batch, function (err, nodes) {
+    if (err) return cb(err)
+    var xnodes = []
+    for (var i = 0; i < lens.length; i++) {
+      xnodes.push(nodes[lens[i]-1])
+    }
+    else cb(null, xnodes)
+  })
+}
+
 Cap.prototype.get = function (key, cb) {
   var self = this
   if (!cb) cb = noop
@@ -329,24 +353,21 @@ Cap.prototype.createReadStream = function (opts) {
       next()
     } else if (v.type === 'doc-enc' && pkey && row.key === pkey.value.key) {
       self._decodeRow(pkey, v, function (err, data) {
-        if (err) next(err)
-        else if (data) next(null, { key: row.key, value: data })
-        else next()
+        if (err) return next(err)
+        else if (!data) return next()
+        next(null, {
+          key: row.key,
+          value: data,
+          identity: row.identity,
+          signature: row.signature,
+          links: row.links
+        })
       })
     } else {
       pkey = null
       next()
     }
   }
-}
-
-Cap.prototype.batch = function () {
-}
-
-Cap.prototype.put = function () {
-}
-
-Cap.prototype.del = function () {
 }
 
 function notFound (err) {
