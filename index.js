@@ -98,13 +98,17 @@ Cap.prototype.createGroup = function (name, cb) {
 
 Cap.prototype.listGroups = function (cb) {
   var self = this
-  var stream = self.db.createReadStream({
-    gt: 'pk-name!',
-    lt: 'pk-name!\uffff'
+  var d = duplexify()
+  self._dex.ready(function () {
+    var stream = self.db.createReadStream({
+      gt: 'pk-name!',
+      lt: 'pk-name!\uffff'
+    })
+    var output = stream.pipe(through.obj(write))
+    if (cb) collect(output, cb)
+    d.setReadable(output)
   })
-  var output = readonly(stream.pipe(through.obj(write)))
-  if (cb) collect(output, cb)
-  return output
+  return d
   function write (row, enc, next) {
     var sp = row.key.split('!')
     next(null, {
@@ -158,7 +162,7 @@ Cap.prototype.invite = function (opts, cb) {
 Cap.prototype._decode = function (key, doc, cb) {
   var self = this
   cb = once(cb || noop)
-  if (!doc.encdata) {
+  if (!doc.value.encdata) {
     return errtick(cb, '.encdata not provided in encrypted message')
   }
   var r = self.db.createReadStream({
@@ -210,15 +214,15 @@ Cap.prototype._decodeRow = function (row, doc, cb) {
     if (!dockey) return cb()
     try {
       var bufs = {
-        data: Buffer(doc.encdata, 'base64'),
-        nonce: Buffer(doc.nonce, 'base64')
+        data: Buffer(doc.value.encdata, 'base64'),
+        nonce: Buffer(doc.value.nonce, 'base64')
       }
     } catch (err) { return cb(err) }
     try {
       var data = self.sodium.crypto_secretbox_open_easy(
         bufs.data, bufs.nonce, dockey)
     } catch (err) { return cb(err) }
-    cb(null, data)
+    cb(null, Object.assign(doc, { value: data }))
   })
 }
 
@@ -234,6 +238,9 @@ Cap.prototype.format = function (data, opts, links) {
       groups[i] = Buffer(groups[i], 'hex')
     }
   }
+  if (groups.length === 0) {
+    throw new Error('must specify one or more groups')
+  }
   var batch = []
   var dockey = randombytes(self.sodium.crypto_secretbox_KEYBYTES || 32)
   var nonce = randombytes(self.sodium.crypto_secretbox_NONCEBYTES || 24)
@@ -242,7 +249,8 @@ Cap.prototype.format = function (data, opts, links) {
       type: 'doc-enc',
       nonce: nonce,
       encdata: self.sodium.crypto_secretbox_easy(data, nonce, dockey)
-    })
+    }),
+    links: links
   }
   var key = framedHash(links, encoder.encode(doc.value, 'json'))
 
@@ -277,7 +285,9 @@ Cap.prototype.add = function (links, row, opts, cb) {
     opts = {}
   }
   if (!opts) opts = {}
-  var batch = self.format(row, opts, links)
+  try {
+    var batch = self.format(row, opts, links)
+  } catch (err) { return errtick(cb, err) }
   self.log.batch(batch, function (err, nodes) {
     if (err) cb(err)
     else cb(null, nodes[nodes.length-1])
@@ -291,7 +301,9 @@ Cap.prototype.append = function (row, opts, cb) {
     opts = {}
   }
   if (!opts) opts = {}
-  var batch = self.format(row, opts, opts.links)
+  try {
+    var batch = self.format(row, opts, opts.links)
+  } catch (err) { return errtick(cb, err) }
   self.log.batch(batch, function (err, nodes) {
     if (err) cb(err)
     else cb(null, nodes[nodes.length-1])
@@ -307,33 +319,38 @@ Cap.prototype.batch = function (rows, opts, cb) {
   if (!opts) opts = {}
   var batch = [], lens = [], sum = 0
   rows.forEach(function (row) {
-    var nbatch = self.format(row, opts, opts.links)
+    try {
+      var nbatch = self.format(row.value, opts, row.links)
+    } catch (err) { return errtick(cb, err) }
     batch = batch.concat(nbatch)
     sum += nbatch.length;
-    lens.push(sum)
+    lens.push(sum-1)
   })
   self.log.batch(batch, function (err, nodes) {
     if (err) return cb(err)
     var xnodes = []
     for (var i = 0; i < lens.length; i++) {
-      xnodes.push(nodes[lens[i]-1])
+      xnodes.push(nodes[lens[i]])
     }
-    else cb(null, xnodes)
+    cb(null, xnodes)
   })
 }
 
 Cap.prototype.get = function (key, cb) {
   var self = this
   if (!cb) cb = noop
-  self.log.get(key, function (err, doc) {
+  self._dex.ready(function () {
+    self.log.get(key, onget)
+  })
+  function onget (err, doc) {
     if (err) return cb(err)
     var v = doc && doc.value
     if (!v) cb(null, undefined)
-    else if (v.type === 'doc') cb(null, v.value)
+    else if (v.type === 'doc') cb(null, doc)
     else if (v.type === 'doc-enc') {
-      self._decode(key, v, cb)
+      self._decode(key, doc, cb)
     } else cb(null, undefined)
-  })
+  }
 }
 
 Cap.prototype.createReadStream = function (opts) {
@@ -352,12 +369,12 @@ Cap.prototype.createReadStream = function (opts) {
       pkey = row
       next()
     } else if (v.type === 'doc-enc' && pkey && row.key === pkey.value.key) {
-      self._decodeRow(pkey, v, function (err, data) {
+      self._decodeRow(pkey, row, function (err, doc) {
         if (err) return next(err)
-        else if (!data) return next()
+        else if (!doc) return next()
         next(null, {
           key: row.key,
-          value: data,
+          value: doc.value,
           identity: row.identity,
           signature: row.signature,
           links: row.links
@@ -374,7 +391,7 @@ function notFound (err) {
   return err && (/^notfound/i.test(err.message) || err.notFound)
 }
 function errtick (cb, msg) {
-  var err = new Error(msg)
+  var err = typeof msg === 'string' ? new Error(msg) : msg
   process.nextTick(function () { cb(err) })
 }
 function noop () {}
