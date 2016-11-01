@@ -2,7 +2,15 @@ message Doc {
   oneof value {
     EncDoc doc = 1;
     EncKey key = 2;
+    Invite invite = 3;
   }
+}
+
+message Invite {
+  required bytes data = 1;
+  required bytes nonce = 2;
+  required bytes to = 3;
+  required bytes group = 4;
 }
 
 message EncDoc {
@@ -13,7 +21,7 @@ message EncDoc {
 message EncKey {
   required bytes data = 1;
   required bytes nonce = 2;
-  required bytes gid = 3;
+  required bytes group = 3;
   required bytes dockey = 4;
   required bytes from = 5;
 }

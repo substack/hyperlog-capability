@@ -36,6 +36,9 @@ function Cap (opts) {
   self.db = defaults(opts.db, { valueEncoding: 'json' })
   self.log = hyperlog(opts.logdb)
   self.sodium = opts.sodium
+  var plen = self.sodium.crypto_box_PUBLICKEYBYTES || 32
+  var slen = self.sodium.crypto_sign_PUBLICKEYBYTES || 32
+
   self._valueEncoding = opts.valueEncoding
   self._dex = hindex({
     db: sub(self.db, 'ic'),
@@ -43,13 +46,48 @@ function Cap (opts) {
     map: function (row, next) {
       try { var doc = messages.Doc.decode(row.value) }
       catch (err) { return next(err) }
- 
-      if (doc.doc) { // encrypted document
-        next()
-      } else if (doc.key) { // encrypted secret key
+
+      if (doc.key) { // encrypted secret key
         var k = doc.key.dockey.toString('hex')
         self.db.put('dk!' + k + '!' + row.key, {}, next)
+      } else if (doc.invite) {
+        var iv = doc.invite
+        self.db.get('sk!' + iv.to.toString('hex'), function (err, kp) {
+          if (notFound(err)) return next()
+          if (err) return next(err)
+          var pk = iv.group.slice(plen, plen + slen)
+          var sk = Buffer(kp.box.secretKey, 'hex')
+          try {
+            var data = self.sodium.crypto_box_open_easy(
+              iv.data, iv.nonce, pk, sk)
+console.log(iv.data)
+console.log(data)
+            var ikp = data && JSON.parse(data)
+          } catch (err) { return next(err) }
+          if (ikp) self._addSK(ikp, next)
+          else next()
+        })
       } else next()
+    }
+  })
+}
+
+Cap.prototype._addSK = function (kp, cb) {
+  var self = this
+  // todo: need to make sure this invite is legit
+  // and doesn't drop existing privledges
+  // ALSO make sure this doesn't overwrite anything
+  //if (!isvalidkp(kp)) {
+  //}
+  var spub = kp.sign.publicKey.toString('hex')
+  var bpub = kp.box.publicKey.toString('hex')
+  var gid = spub + bpub
+  self.db.get('sk!' + gid, function (err, ekp) {
+    if (err && !notFound(err)) return cb(err)
+    if (ekp) {
+      console.error('TODO... there is already a key')
+    } else {
+      self.db.put('sk!' + gid, kp, cb)
     }
   })
 }
@@ -114,22 +152,30 @@ Cap.prototype.listGroups = function (cb) {
 Cap.prototype.invite = function (opts, cb) {
   var self = this
   if (!opts) opts = {}
-  if (typeof opts.to !== 'string' || !ishex(opts.to)) {
-    return errtick(cb, 'opts.to must be a hex string')
+  var to = opts.to
+  if (typeof to === 'string') {
+    try { to = Buffer(to, 'hex') }
+    catch (err) { return errtick(cb, err) }
+  } else if (!isbuffer(to)) {
+    return errtick(cb, 'opts.to must be a hex string or buffer')
   }
-  if (typeof opts.group !== 'string' || !ishex(opts.group)) {
-    return errtick(cb, 'opts.group must be a hex string')
+  var group = opts.group
+  if (typeof group === 'string') {
+    try { group = Buffer(group, 'hex') }
+    catch (err) { return errtick(cb, err) }
+  } else if (!isbuffer(group)) {
+    return errtick(cb, 'opts.group must be a hex string or buffer')
   }
   if (typeof opts.mode !== 'string' || !/^[rw]+$/) {
     return errtick(cb, 'opts.mode string must be one of: r, w, rw')
   }
-  self.idb.get('sk!' + opts.group, function (err, kp) {
+  self.db.get('sk!' + group.toString('hex'), function (err, kp) {
     if (err) return cb(err)
     var nonce = randombytes(self.sodium.crypto_box_NONCEBYTES || 24)
-    var bufs = {
-      pk: Buffer(opts.to, 'hex'),
-      sk: Buffer(kp.box.secretKey, 'hex')
-    }
+    var sk = Buffer(kp.box.secretKey, 'hex')
+    var plen = self.sodium.crypto_box_PUBLICKEYBYTES
+    var slen = self.sodium.crypto_sign_PUBLICKEYBYTES
+    var pk = group.slice(plen, plen + slen)
     var obj = {
       box: { publicKey: kp.box.publicKey.toString('hex') },
       sign: { publicKey: kp.sign.publicKey.toString('hex') }
@@ -138,16 +184,17 @@ Cap.prototype.invite = function (opts, cb) {
       obj.box.secretKey = kp.box.secretKey.toString('hex')
     }
     if (/w/.test(opts.mode)) {
-      opts.sign.secretKey = kp.sign.secretKey.toString('hex')
+      obj.sign.secretKey = kp.sign.secretKey.toString('hex')
     }
     var secret = Buffer(JSON.stringify(obj))
     var encdata = self.sodium.crypto_box_easy(secret, nonce, pk, sk)
-    self.log.append(jstr({
-      type: 'group-invite',
-      to: opts.to,
-      group: opts.group,
-      nonce: nonce,
-      encdata: encdata
+    self.log.append(messages.Doc.encode({
+      invite: {
+        to: to,
+        group: group,
+        nonce: nonce,
+        data: encdata
+      }
     }), cb)
   })
 }
@@ -173,7 +220,7 @@ Cap.prototype._decode = function (key, doc, cb) {
       self._decodeRow(rdoc.key, doc, function (err, data) {
         if (err) next(err)
         else if (data) {
-          cb(null, Object.assign(row, { value: data }))
+          cb(null, xtend(row, { value: data }))
           r.destroy()
         } else next()
       })
@@ -186,7 +233,7 @@ Cap.prototype._decode = function (key, doc, cb) {
 
 Cap.prototype._decodeRow = function (v, doc, cb) {
   var self = this
-  var gid = v.gid.toString('hex')
+  var gid = v.group.toString('hex')
 
   self.db.get('sk!' + gid, function (err, kp) {
     if (notFound(err)) return cb()
@@ -257,7 +304,7 @@ Cap.prototype.format = function (row, opts, links) {
     batch.push({
       value: messages.Doc.encode({
         key: {
-          gid: g,
+          group: g,
           dockey: dochash,
           from: kp.publicKey, // todo: use device key
           nonce: nonce,

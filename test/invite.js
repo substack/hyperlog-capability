@@ -5,7 +5,7 @@ var collect = require('collect-stream')
 var hcap = require('../')
 
 test('invite', function (t) {
-  t.plan(5)
+  t.plan(7)
   var cap0 = hcap({
     logdb: memdb(),
     db: memdb(),
