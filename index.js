@@ -10,15 +10,20 @@ var through = require('through2')
 var to = require('to2')
 var readonly = require('read-only-stream')
 var randombytes = require('randombytes')
-var framedHash = require('hyperlog/lib/hash.js')
-var encoder = require('hyperlog/lib/encode.js')
 var isbuffer = require('is-buffer')
 var once = require('once')
+
+var protobuf = require('protocol-buffers')
+var fs = require('fs')
+var messages = protobuf(fs.readFileSync(__dirname + '/schema.proto'))
 
 var inherits = require('inherits')
 var EventEmitter = require('events').EventEmitter
 
+var encoder = require('hyperlog/lib/encode.js')
+var empty = new Buffer(0)
 var isvalidkp = require('./lib/is-valid-kp.js')
+var hashof = require('./lib/hash.js')
 
 inherits(Cap, EventEmitter)
 module.exports = Cap
@@ -29,30 +34,21 @@ function Cap (opts) {
   var self = this
   if (!(self instanceof Cap)) return new Cap(opts)
   self.db = defaults(opts.db, { valueEncoding: 'json' })
-  self.log = hyperlog(opts.logdb, { valueEncoding: 'json' })
+  self.log = hyperlog(opts.logdb)
   self.sodium = opts.sodium
+  self._valueEncoding = opts.valueEncoding
   self._dex = hindex({
     db: sub(self.db, 'ic'),
     log: self.log,
     map: function (row, next) {
-      var v = row.value
-      if (!v) return next()
-      if (v.type === 'group-create' && ishex(v.id)) {
-        self.db.batch([
-          {
-            type: 'put',
-            key: 'pk-name!' + v.id + '!' + v.name,
-            value: { key: row.key }
-          }
-        ], next)
-      } else if (v.type === 'doc-key' && ishex(v.key)) {
-        self.db.batch([
-          {
-            type: 'put',
-            key: 'dk!' + v.key + '!' + row.key,
-            value: ''
-          }
-        ], next)
+      try { var doc = messages.Doc.decode(row.value) }
+      catch (err) { return next(err) }
+ 
+      if (doc.doc) { // encrypted document
+        next()
+      } else if (doc.key) { // encrypted secret key
+        var k = doc.key.dockey.toString('hex')
+        self.db.put('dk!' + k + '!' + row.key, {}, next)
       } else next()
     }
   })
@@ -80,19 +76,16 @@ Cap.prototype.createGroup = function (name, cb) {
           secretKey: kp.box.secretKey.toString('hex')
         }
       }
+    },
+    {
+      type: 'put',
+      key: 'pk-name!' + gid + '!' + name,
+      value: {}
     }
   ], onbatch)
   function onbatch (err) {
-    if (err) return cb(err)
-    self.log.append({
-      type: 'group-create',
-      name: name,
-      id: gid
-    }, onput)
-  }
-  function onput (err) {
-    if (err) return cb(err)
-    cb(null, gid)
+    if (err) cb(err)
+    else cb(null, gid)
   }
 }
 
@@ -162,9 +155,6 @@ Cap.prototype.invite = function (opts, cb) {
 Cap.prototype._decode = function (key, doc, cb) {
   var self = this
   cb = once(cb || noop)
-  if (!doc.value.encdata) {
-    return errtick(cb, '.encdata not provided in encrypted message')
-  }
   var r = self.db.createReadStream({
     gt: 'dk!' + key + '!',
     lt: 'dk!' + key + '!~'
@@ -175,12 +165,15 @@ Cap.prototype._decode = function (key, doc, cb) {
   function write (row, enc, next) {
     var key = row.key.split('!')[2]
     self.log.get(key, function (err, row) {
-      if (notFound(err)) next()
-      else if (err) next(err)
-      else self._decodeRow(row, doc, function (err, data) {
+      if (notFound(err)) return next()
+      else if (err) return next(err)
+      try { var rdoc = messages.Doc.decode(row.value) }
+      catch (err) { return cb(err) }
+      if (!rdoc.key) return next()
+      self._decodeRow(rdoc.key, doc, function (err, data) {
         if (err) next(err)
         else if (data) {
-          cb(null, data)
+          cb(null, Object.assign(row, { value: data }))
           r.destroy()
         } else next()
       })
@@ -191,42 +184,38 @@ Cap.prototype._decode = function (key, doc, cb) {
   }
 }
 
-Cap.prototype._decodeRow = function (row, doc, cb) {
+Cap.prototype._decodeRow = function (v, doc, cb) {
   var self = this
-  var v = row.value
-  if (!v) return cb()
-  self.db.get('sk!' + v.group, function (err, kp) {
+  var gid = v.gid.toString('hex')
+
+  self.db.get('sk!' + gid, function (err, kp) {
     if (notFound(err)) return cb()
     if (err) return cb(err)
     try {
-      var bufs = {
-        data: Buffer(v.encdata, 'base64'),
-        nonce: Buffer(v.nonce, 'base64'),
-        pk: Buffer(v.from, 'hex'),
-        sk: Buffer(kp.box.secretKey, 'hex')
-      }
+      var sk = Buffer(kp.box.secretKey, 'hex')
+      var pk = v.from
     } catch (err) { return cb(err) }
     try {
-      var dockey = self.sodium.crypto_box_open_easy(
-        bufs.data, bufs.nonce, bufs.pk, bufs.sk
-      )
+      var dockey = self.sodium.crypto_box_open_easy(v.data, v.nonce, pk, sk)
     } catch (err) { return cb(err) }
     if (!dockey) return cb()
     try {
       var bufs = {
-        data: Buffer(doc.value.encdata, 'base64'),
-        nonce: Buffer(doc.value.nonce, 'base64')
+        data: doc.data,
+        nonce: doc.nonce,
       }
     } catch (err) { return cb(err) }
     try {
       var data = self.sodium.crypto_secretbox_open_easy(
-        bufs.data, bufs.nonce, dockey)
+        doc.data, doc.nonce, dockey)
     } catch (err) { return cb(err) }
-    cb(null, Object.assign(doc, { value: data }))
+    try { var dec = encoder.decode(data, self._valueEncoding) }
+    catch (err) { return cb(err) }
+    cb(null, dec)
   })
 }
 
-Cap.prototype.format = function (data, opts, links) {
+Cap.prototype.format = function (row, opts, links) {
   var self = this
   if (!opts) opts = {}
   if (!links) links = []
@@ -241,18 +230,20 @@ Cap.prototype.format = function (data, opts, links) {
   if (groups.length === 0) {
     throw new Error('must specify one or more groups')
   }
+  var data = encoder.encode(row || empty, self._valueEncoding)
   var batch = []
   var dockey = randombytes(self.sodium.crypto_secretbox_KEYBYTES || 32)
   var nonce = randombytes(self.sodium.crypto_secretbox_NONCEBYTES || 24)
   var doc = {
-    value: jstr({
-      type: 'doc-enc',
-      nonce: nonce,
-      encdata: self.sodium.crypto_secretbox_easy(data, nonce, dockey)
+    value: messages.Doc.encode({
+      doc: {
+        nonce: nonce,
+        data: self.sodium.crypto_secretbox_easy(data, nonce, dockey)
+      }
     }),
     links: links
   }
-  var key = framedHash(links, encoder.encode(doc.value, 'json'))
+  var dochash = hashof(links, doc.value)
 
   // throw-away key to send a message to the group
   var kp = self.sodium.crypto_box_keypair()
@@ -264,13 +255,14 @@ Cap.prototype.format = function (data, opts, links) {
     var boxlen = self.sodium.crypto_box_PUBLICKEYBYTES || 32
     var boxpk = g.slice(siglen, siglen + boxlen)
     batch.push({
-      value: jstr({
-        type: 'doc-key',
-        group: g.toString('hex'),
-        key: key,
-        from: kp.publicKey.toString('hex'), // todo: use device key
-        nonce: nonce,
-        encdata: self.sodium.crypto_box_easy(dockey, nonce, boxpk, kp.secretKey)
+      value: messages.Doc.encode({
+        key: {
+          gid: g,
+          dockey: dochash,
+          from: kp.publicKey, // todo: use device key
+          nonce: nonce,
+          data: self.sodium.crypto_box_easy(dockey, nonce, boxpk, kp.secretKey)
+        }
       })
     })
   })
@@ -342,39 +334,37 @@ Cap.prototype.get = function (key, cb) {
   self._dex.ready(function () {
     self.log.get(key, onget)
   })
-  function onget (err, doc) {
+  function onget (err, row) {
     if (err) return cb(err)
-    var v = doc && doc.value
-    if (!v) cb(null, undefined)
-    else if (v.type === 'doc') cb(null, doc)
-    else if (v.type === 'doc-enc') {
-      self._decode(key, doc, cb)
-    } else cb(null, undefined)
+    try { var doc = messages.Doc.decode(row.value) }
+    catch (err) { return cb(err) }
+    if (doc.doc) self._decode(key, doc.doc, cb)
+    else cb(null, undefined)
   }
 }
 
 Cap.prototype.createReadStream = function (opts) {
   var self = this
-  var pkey = null
+  var pkey = null, phex = null
   var r = self.log.createReadStream(opts)
   var s = through.obj(write)
   r.on('error', function (err) { s.emit('error', err) })
   return readonly(r.pipe(s))
 
   function write (row, enc, next) {
-    //if (pkey) console.log(row.key, pkey.value.key)
-    var v = row.value
-    if (!v) return next()
-    if (v.type === 'doc-key') {
-      pkey = row
+    try { var doc = messages.Doc.decode(row.value) }
+    catch (err) { return next(err) }
+    if (doc.key) {
+      pkey = doc.key
+      phex = doc.key.dockey.toString('hex'),
       next()
-    } else if (v.type === 'doc-enc' && pkey && row.key === pkey.value.key) {
-      self._decodeRow(pkey, row, function (err, doc) {
+    } else if (doc.doc && pkey && row.key === phex) {
+      self._decodeRow(pkey, doc.doc, function (err, value) {
         if (err) return next(err)
-        else if (!doc) return next()
+        else if (!value) return next()
         next(null, {
           key: row.key,
-          value: doc.value,
+          value: value,
           identity: row.identity,
           signature: row.signature,
           links: row.links

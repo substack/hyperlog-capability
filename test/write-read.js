@@ -26,12 +26,12 @@ test('write read', function (t) {
     })
   })
   function appendData (gid) {
-    cap.append(Buffer('hello'), { group: gid }, function (err, node) {
+    cap.append('hello', { group: gid }, function (err, node) {
       t.error(err)
       var pending = 2
       cap.get(node.key, function (err, doc) {
         t.error(err)
-        t.equal(doc.value.toString(), 'hello', 'expected result from append')
+        t.equal(doc.value, 'hello', 'expected result from append')
         if (--pending === 0) done()
       })
       var r = cap.createReadStream()
@@ -45,12 +45,12 @@ test('write read', function (t) {
     })
   }
   function addData (key, gid) {
-    cap.add([key], Buffer('world'), { group: gid }, function (err, node) {
+    cap.add([key], 'world', { group: gid }, function (err, node) {
       t.error(err)
       var pending = 2
       cap.get(node.key, function (err, doc) {
         t.error(err)
-        t.equal(doc.value.toString(), 'world', 'expected result from append')
+        t.equal(doc.value, 'world', 'expected result from append')
         if (--pending === 0) done()
       })
       var r = cap.createReadStream()
@@ -68,11 +68,11 @@ test('write read', function (t) {
   function batchData (prev, gid) {
     var batch = [
       {
-        value: Buffer('what'),
+        value: 'what',
         links: [prev[0],prev[1]]
       },
       {
-        value: Buffer('ever'),
+        value: 'ever',
         links: [prev[1]]
       }
     ]
@@ -81,12 +81,12 @@ test('write read', function (t) {
       var pending = 3
       cap.get(nodes[0].key, function (err, doc) {
         t.error(err)
-        t.equal(doc.value.toString(), 'what', 'batch value 0')
+        t.equal(doc.value, 'what', 'batch value 0')
         if (--pending === 0) done()
       })
       cap.get(nodes[1].key, function (err, doc) {
         t.error(err)
-        t.equal(doc.value.toString(), 'ever', 'batch value 1')
+        t.equal(doc.value, 'ever', 'batch value 1')
         if (--pending === 0) done()
       })
       var r = cap.createReadStream()

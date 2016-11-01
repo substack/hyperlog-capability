@@ -1,0 +1,19 @@
+message Doc {
+  oneof value {
+    EncDoc doc = 1;
+    EncKey key = 2;
+  }
+}
+
+message EncDoc {
+  required bytes data = 1;
+  required bytes nonce = 2;
+}
+
+message EncKey {
+  required bytes data = 1;
+  required bytes nonce = 2;
+  required bytes gid = 3;
+  required bytes dockey = 4;
+  required bytes from = 5;
+}

@@ -21,7 +21,7 @@ if (process.argv[2] === 'create') {
 } else if (process.argv[2] === 'stream') {
   cap.createReadStream().on('data', console.log)
 } else if (process.argv[2] === 'write') {
-  var data = Buffer(process.argv.slice(4).join(' '))
+  var data = process.argv.slice(4).join(' ')
   var groups = process.argv[3].split(',')
   cap.append(data, { groups: groups }, function (err, node) {
     if (err) console.error(err)
