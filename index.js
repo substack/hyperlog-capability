@@ -114,10 +114,10 @@ Cap.prototype.listGroups = function (cb) {
 Cap.prototype.invite = function (opts, cb) {
   var self = this
   if (!opts) opts = {}
-  if (typeof opts.to !== 'string' || !/^[0-9a-f]$/i.test(opts.to)) {
+  if (typeof opts.to !== 'string' || !ishex(opts.to)) {
     return errtick(cb, 'opts.to must be a hex string')
   }
-  if (typeof opts.group !== 'string' || !/^[0-9a-f]$/i.test(opts.group)) {
+  if (typeof opts.group !== 'string' || !ishex(opts.group)) {
     return errtick(cb, 'opts.group must be a hex string')
   }
   if (typeof opts.mode !== 'string' || !/^[rw]+$/) {
