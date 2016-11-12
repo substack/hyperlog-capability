@@ -433,16 +433,6 @@ function errtick (cb, msg) {
 }
 function noop () {}
 
-function jstr (doc) {
-  var ndoc = {}
-  Object.keys(doc).sort().forEach(function (key) {
-    if (isbuffer(doc[key])) {
-      ndoc[key] = doc[key].toString('base64')
-    } else ndoc[key] = doc[key]
-  })
-  return ndoc
-}
-
 function ishex (s) {
   return /^[0-9a-f]+$/i.test(s)
 }
