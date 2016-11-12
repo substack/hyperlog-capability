@@ -33,6 +33,7 @@ module.exports = Cap
 function Cap (opts) {
   var self = this
   if (!(self instanceof Cap)) return new Cap(opts)
+  EventEmitter.call(self)
   self.db = defaults(opts.db, { valueEncoding: 'json' })
   self.log = hyperlog(opts.logdb)
   self.sodium = opts.sodium
@@ -68,6 +69,7 @@ function Cap (opts) {
       } else next()
     }
   })
+  self._dex.on('error', function (err) { self.emit('error', err) })
 }
 
 Cap.prototype._addSK = function (kp, cb) {
@@ -173,7 +175,7 @@ Cap.prototype.invite = function (opts, cb) {
     var sk = Buffer(kp.box.secretKey, 'hex')
     var plen = self.sodium.crypto_box_PUBLICKEYBYTES
     var slen = self.sodium.crypto_sign_PUBLICKEYBYTES
-    var pk = group.slice(plen, plen + slen)
+    var pk = to.slice(plen, plen + slen)
     var obj = {
       box: { publicKey: kp.box.publicKey.toString('hex') },
       sign: { publicKey: kp.sign.publicKey.toString('hex') }

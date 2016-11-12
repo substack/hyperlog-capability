@@ -24,11 +24,7 @@ test('invite', function (t) {
   cap0.createGroup('u0', function (err, gid) {
     t.error(err)
     groups.u0 = gid
-    cap0.append('secret message', { group: gid }, function (err, node) {
-      t.error(err)
-      dockey = node.key
-      if (--pending === 0) invite()
-    })
+    if (--pending === 0) invite()
   })
   cap1.createGroup('u1', function (err, gid) {
     t.error(err)
@@ -38,7 +34,11 @@ test('invite', function (t) {
   cap0.createGroup('shared', function (err, gid) {
     t.error(err)
     groups.shared = gid
-    if (--pending === 0) invite()
+    cap0.append('secret message', { group: gid }, function (err, node) {
+      t.error(err)
+      dockey = node.key
+      if (--pending === 0) invite()
+    })
   })
   function invite () {
     cap0.invite({
@@ -55,9 +55,9 @@ test('invite', function (t) {
     }
   }
   function checkRead () {
-    cap1.get(dockey, function (err, value) {
+    cap1.get(dockey, function (err, doc) {
       t.error(err)
-      t.equal(value, 'secret message')
+      t.equal(doc.value, 'secret message')
     })
   }
 })
