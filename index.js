@@ -60,8 +60,6 @@ function Cap (opts) {
           try {
             var data = self.sodium.crypto_box_open_easy(
               iv.data, iv.nonce, pk, sk)
-console.log(iv.data)
-console.log(data)
             var ikp = data && JSON.parse(data)
           } catch (err) { return next(err) }
           if (ikp) self._addSK(ikp, next)
