@@ -35,7 +35,14 @@ function Cap (opts) {
   if (!(self instanceof Cap)) return new Cap(opts)
   EventEmitter.call(self)
   self.db = defaults(opts.db, { valueEncoding: 'json' })
-  self.log = hyperlog(opts.logdb)
+  self.log = hyperlog(opts.logdb, {
+    sign: function (node, cb) {
+      cb(null, self.sodium.crypto_sign_detached)
+    },
+    verify: function (node, cb) {
+      cb(null, true)
+    }
+  })
   self.sodium = opts.sodium
   var plen = self.sodium.crypto_box_PUBLICKEYBYTES || 32
   var slen = self.sodium.crypto_sign_PUBLICKEYBYTES || 32
