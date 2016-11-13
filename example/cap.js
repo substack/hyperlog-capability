@@ -20,10 +20,12 @@ if (process.argv[2] === 'create') {
   })
 } else if (process.argv[2] === 'stream') {
   cap.createReadStream().on('data', console.log)
-} else if (process.argv[2] === 'write') {
-  var data = process.argv.slice(4).join(' ')
-  var groups = process.argv[3].split(',')
-  cap.append(data, { groups: groups }, function (err, node) {
+} else if (process.argv[2] === 'append') {
+  var id = Buffer(process.argv[3], 'hex')
+  var groups = process.argv[4].split(',')
+  var data = process.argv.slice(5).join(' ')
+  var opts = { groups: groups, identity: id }
+  cap.append(data, opts, function (err, node) {
     if (err) console.error(err)
     else console.log(node.key)
   })
