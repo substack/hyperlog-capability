@@ -230,6 +230,10 @@ Cap.prototype.invite = function (opts, cb) {
     var plen = self.sodium.crypto_box_PUBLICKEYBYTES
     var slen = self.sodium.crypto_sign_PUBLICKEYBYTES
     var pk = to.slice(plen, plen + slen)
+    var id = opts.identity
+    if (!id && kp.sign && kp.sign.secretKey) {
+      id = group
+    }
     var obj = {
       box: { publicKey: kp.box.publicKey.toString('hex') },
       sign: { publicKey: kp.sign.publicKey.toString('hex') }
@@ -249,7 +253,7 @@ Cap.prototype.invite = function (opts, cb) {
         nonce: nonce,
         data: encdata
       }
-    }), cb)
+    }), { identity: id }, cb)
   })
 }
 
