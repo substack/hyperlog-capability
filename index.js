@@ -28,8 +28,6 @@ var hashof = require('./lib/hash.js')
 inherits(Cap, EventEmitter)
 module.exports = Cap
 
-// todo: sign the group-create message with the appropriate public key
-
 function Cap (opts) {
   var self = this
   if (!(self instanceof Cap)) return new Cap(opts)
@@ -37,12 +35,41 @@ function Cap (opts) {
   self.db = defaults(opts.db, { valueEncoding: 'json' })
   self.log = hyperlog(opts.logdb, {
     sign: function (node, cb) {
-      cb(null, self.sodium.crypto_sign_detached)
+      try { var doc = messages.Doc.decode(node.value) }
+      catch (err) { return cb(err) }
+      var key = null
+      if (doc.key || doc.invite) { // sent to a group
+        key = 'sk!' + (doc.key || doc.invite).group.toString('hex')
+      } else if (doc.doc && node.identity) {
+        key = 'sk!' + node.identity.toString('hex')
+      }
+      if (key) {
+        self.db.get(key, function (err, kp) {
+          if (err) return cb(err)
+          var sk = Buffer(kp.sign.secretKey, 'hex')
+          cb(null, self.sodium.crypto_sign_detached(node.value, sk))
+        })
+      } else {
+        cb(null, empty)
+      }
     },
     verify: function (node, cb) {
-      cb(null, true)
+      try { var doc = messages.Doc.decode(node.value) }
+      catch (err) { return cb(err) }
+      var slen = self.sodium.crypto_sign_PUBLICKEYBYTES || 32
+      var pk
+      if (doc.invite || doc.key) {
+        pk = (doc.invite || doc.key).group.slice(0, slen)
+      } else if (doc.doc) {
+        pk = node.identity.slice(0, slen)
+      }
+      if (pk) {
+        cb(null, self.sodium.crypto_sign_verify_detached(
+          node.signature, node.value, pk))
+      } else cb(null, false)
     }
   })
+  self.log.on('error', function (err) { self.emit('error', err) })
   self.sodium = opts.sodium
   var plen = self.sodium.crypto_box_PUBLICKEYBYTES || 32
   var slen = self.sodium.crypto_sign_PUBLICKEYBYTES || 32
@@ -284,6 +311,12 @@ Cap.prototype.format = function (row, opts, links) {
   if (groups.length === 0) {
     throw new Error('must specify one or more groups')
   }
+  var id = opts.identity
+  if (typeof id === 'string' && ishex(id)) {
+    id = Buffer(id, 'hex')
+  } else if (!isbuffer(id)) {
+    throw new Error('must provide opts.identity')
+  }
   var data = encoder.encode(row || empty, self._valueEncoding)
   var batch = []
   var dockey = randombytes(self.sodium.crypto_secretbox_KEYBYTES || 32)
@@ -295,6 +328,7 @@ Cap.prototype.format = function (row, opts, links) {
         data: self.sodium.crypto_secretbox_easy(data, nonce, dockey)
       }
     }),
+    identity: id,
     links: links
   }
   var dochash = hashof(links, doc.value)
@@ -317,7 +351,8 @@ Cap.prototype.format = function (row, opts, links) {
           nonce: nonce,
           data: self.sodium.crypto_box_easy(dockey, nonce, boxpk, kp.secretKey)
         }
-      })
+      }),
+      identity: id
     })
   })
   batch.push(doc)

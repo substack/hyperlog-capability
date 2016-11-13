@@ -26,7 +26,11 @@ test('write read', function (t) {
     })
   })
   function appendData (gid) {
-    cap.append('hello', { group: gid }, function (err, node) {
+    var opts = {
+      group: gid,
+      identity: gid
+    }
+    cap.append('hello', opts, function (err, node) {
       t.error(err)
       var pending = 2
       cap.get(node.key, function (err, doc) {
@@ -45,7 +49,11 @@ test('write read', function (t) {
     })
   }
   function addData (key, gid) {
-    cap.add([key], 'world', { group: gid }, function (err, node) {
+    var opts = {
+      group: gid,
+      identity: gid
+    }
+    cap.add([key], 'world', opts, function (err, node) {
       t.error(err)
       var pending = 2
       cap.get(node.key, function (err, doc) {
@@ -76,7 +84,11 @@ test('write read', function (t) {
         links: [prev[1]]
       }
     ]
-    cap.batch(batch, { group: gid }, function (err, nodes) {
+    var opts = {
+      group: gid,
+      identity: gid
+    }
+    cap.batch(batch, opts, function (err, nodes) {
       t.error(err)
       var pending = 3
       cap.get(nodes[0].key, function (err, doc) {

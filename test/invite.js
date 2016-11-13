@@ -5,7 +5,7 @@ var collect = require('collect-stream')
 var hcap = require('../')
 
 test('invite', function (t) {
-  t.plan(7)
+  t.plan(8)
   var cap0 = hcap({
     logdb: memdb(),
     db: memdb(),
@@ -18,27 +18,30 @@ test('invite', function (t) {
     sodium: sodium,
     valueEncoding: 'json'
   })
-  var pending = 3
+  var pending = 2
   var groups = {}
   var dockey = null
   cap0.createGroup('u0', function (err, gid) {
     t.error(err)
     groups.u0 = gid
-    if (--pending === 0) invite()
+    cap0.createGroup('shared', function (err, gid) {
+      t.error(err)
+      groups.shared = gid
+      var opts = {
+        group: gid,
+        identity: gid
+      }
+      cap0.append('secret message', opts, function (err, node) {
+        t.error(err)
+        dockey = node.key
+        if (--pending === 0) invite()
+      })
+    })
   })
   cap1.createGroup('u1', function (err, gid) {
     t.error(err)
     groups.u1 = gid
     if (--pending === 0) invite()
-  })
-  cap0.createGroup('shared', function (err, gid) {
-    t.error(err)
-    groups.shared = gid
-    cap0.append('secret message', { group: gid }, function (err, node) {
-      t.error(err)
-      dockey = node.key
-      if (--pending === 0) invite()
-    })
   })
   function invite () {
     cap0.invite({
@@ -58,6 +61,8 @@ test('invite', function (t) {
     cap1.get(dockey, function (err, doc) {
       t.error(err)
       t.equal(doc.value, 'secret message')
+      t.equal(doc.identity.toString('hex'), groups.shared.toString('hex'),
+        'expected identity for secret message')
     })
   }
 })
