@@ -1,5 +1,4 @@
 var hyperlog = require('hyperlog')
-var hsodium = require('hyperlog-sodium')
 var sub = require('subleveldown')
 var hindex = require('hyperlog-index')
 var collect = require('collect-stream')
@@ -502,6 +501,6 @@ function ishex (s) {
 
 function tobuf (s) {
   if (typeof s === 'string' && ishex(s)) return new Buffer(s, 'hex')
-  else if (Buffer.isBuffer(s)) return s
+  else if (isbuffer(s)) return s
   else return null
 }

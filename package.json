@@ -1,14 +1,11 @@
 {
   "dependencies": {
     "brfs": "^1.4.3",
-    "chloride": "^2.2.2",
     "collect-stream": "^1.1.1",
-    "deferred-hyperlog": "^1.1.0",
     "duplexify": "^3.5.0",
     "framed-hash": "^1.1.0",
     "hyperlog": "^4.10.4",
     "hyperlog-index": "^5.1.0",
-    "hyperlog-sodium": "^2.0.0",
     "inherits": "^2.0.3",
     "is-buffer": "^1.1.4",
     "levelup-defaults": "^2.0.0",
@@ -23,7 +20,7 @@
   },
   "devDependencies": {
     "memdb": "^1.3.1",
-    "memdown": "^1.2.2",
+    "chloride": "^2.2.2",
     "tape": "^4.6.2"
   },
   "browserify": {
