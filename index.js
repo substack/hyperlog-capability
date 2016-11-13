@@ -108,17 +108,30 @@ function Cap (opts) {
 
 Cap.prototype._addSK = function (kp, cb) {
   var self = this
-  // todo: need to make sure this invite is legit
-  // and doesn't drop existing privledges
-  // ALSO make sure this doesn't overwrite anything
-  //if (!isvalidkp(kp)) {
-  //}
+  if (!kp.sign && !kp.box) {
+    return errtick(cb, 'keypair must have sign, box, or both')
+  }
+  try {
+    var bkp = {
+      sign: kp.sign && {
+        publicKey: tobuf(kp.sign.publicKey),
+        secretKey: tobuf(kp.sign.secretKey)
+      },
+      box: kp.box && {
+        publicKey: tobuf(kp.box.publicKey),
+        secretKey: tobuf(kp.box.secretKey)
+      }
+    }
+  } catch (err) { return errtick(cb, err) }
+  if (!isvalidkp(self.sodium, bkp)) {
+    return errtick(cb, 'invalid keypair')
+  }
   var spub = kp.sign.publicKey.toString('hex')
   var bpub = kp.box.publicKey.toString('hex')
   var gid = spub + bpub
   self.db.get('sk!' + gid, function (err, ekp) {
     if (err && !notFound(err)) return cb(err)
-    if (ekp) {
+    if (ekp) { // already have a key, merge new data without dropping existing
       console.error('TODO... there is already a key')
     } else {
       self.db.put('sk!' + gid, kp, cb)
@@ -477,4 +490,10 @@ function noop () {}
 
 function ishex (s) {
   return /^[0-9a-f]+$/i.test(s)
+}
+
+function tobuf (s) {
+  if (typeof s === 'string' && ishex(s)) return new Buffer(s, 'hex')
+  else if (Buffer.isBuffer(s)) return s
+  else return null
 }
