@@ -4,7 +4,7 @@ group permissions for [hyperlog][1]
 
 WARNING: experimental, unproven cryptosystem!
 
-Capability systems enforce "who can do what" with a resource. Unix file
+[Capability systems][3] enforce "who can do what" with a resource. Unix file
 permissions are a good example: a bitfield specifies who is allowed to read,
 write, or execute each file.
 
@@ -18,6 +18,7 @@ that work for high-latency scenarios like passing around a usb thumb drive
 between remote off-grid communities.
 
 [1]: https://npmjs.com/package/hyperlog
+[3]: http://srl.cs.jhu.edu/pubs/SRL2003-02.pdf
 
 # example
 
