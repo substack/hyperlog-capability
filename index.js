@@ -132,7 +132,15 @@ Cap.prototype._addSK = function (kp, cb) {
   self.db.get('sk!' + gid, function (err, ekp) {
     if (err && !notFound(err)) return cb(err)
     if (ekp) { // already have a key, merge new data without dropping existing
-      console.error('TODO... there is already a key')
+      kp.box = {
+        publicKey: (kp.box || {}).publicKey || (ekp.box || {}).publicKey,
+        secretKey: (kp.box || {}).secretKey || (ekp.box || {}).secretKey
+      }
+      kp.sign = {
+        publicKey: (kp.sign || {}).publicKey || (ekp.sign || {}).publicKey,
+        secretKey: (kp.sign || {}).secretKey || (ekp.sign || {}).secretKey
+      }
+      self.db.put('sk!' + gid, kp, cb)
     } else {
       self.db.put('sk!' + gid, kp, cb)
     }
