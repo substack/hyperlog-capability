@@ -1,4 +1,8 @@
 {
+  "name": "hyperlog-capability",
+  "description": "group permissions for hyperlog",
+  "version": "1.0.0",
+  "main": "index.js",
   "dependencies": {
     "brfs": "^1.4.3",
     "collect-stream": "^1.1.1",
@@ -30,5 +34,22 @@
   },
   "scripts": {
     "test": "tape test/*.js"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substack/hyperlog-capability.git"
+  },
+  "keywords": [
+    "hyperlog",
+    "p2p",
+    "capability system",
+    "permissions",
+    "crypto"
+  ],
+  "author": "substack",
+  "license": "BSD",
+  "bugs": {
+    "url": "https://github.com/substack/hyperlog-capability/issues"
+  },
+  "homepage": "https://github.com/substack/hyperlog-capability#readme"
 }
